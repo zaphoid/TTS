@@ -1,4 +1,16 @@
-Key Enhancements
+Save the code to a Python file
+Install dependencies: pip install openai python-docx tk
+Make sure your OpenAI API key is set as an environment variable <----------
+Run the application and follow the interface to:
+
+Select your text file
+Choose an output directory
+Configure voices and style instructions
+Preview the segmentation
+Convert to speech
+
+
+Key Features
 
 Segment-Specific Style Instructions:
 
