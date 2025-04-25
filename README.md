@@ -1,4 +1,5 @@
 Installation:
+
 Save the code to a Python file.
 
 Install dependencies: pip install openai python-docx tk.
@@ -16,7 +17,7 @@ Convert to speech
 
 Key Features
 
-This will use OpenAI to scan text and divide into narration, speech, code and change voice and any instructions. It overcomes the file size by 
+This will use OpenAI to scan text and divide into narration, speech, code and change voice and any instructions. It overcomes the file size limit by 
 outputting small chunks then reassembling them into one file as the last step.
 
 Segment-Specific Style Instructions:
