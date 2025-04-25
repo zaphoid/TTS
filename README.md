@@ -2,7 +2,9 @@ Installation:
 
 Save the code to a Python file.
 
-Install dependencies: pip install openai python-docx tk.
+Install dependencies: pip install openai python-docx tk
+
+Also install FFMPEG, choco is the easiest way
 
 Make sure your OpenAI API key is set as an environment variable <----------
 
