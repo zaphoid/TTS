@@ -1,6 +1,10 @@
-Save the code to a Python file
-Install dependencies: pip install openai python-docx tk
+Installation:
+Save the code to a Python file.
+
+Install dependencies: pip install openai python-docx tk.
+
 Make sure your OpenAI API key is set as an environment variable <----------
+
 Run the application and follow the interface to:
 
 Select your text file
@@ -11,6 +15,9 @@ Convert to speech
 
 
 Key Features
+
+This will use OpenAI to scan text and divide into narration, speech, code and change voice and any instructions. It overcomes the file size by 
+outputting small chunks then reassembling them into one file as the last step.
 
 Segment-Specific Style Instructions:
 
