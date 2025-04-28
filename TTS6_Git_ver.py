@@ -19,6 +19,7 @@ from docx import Document
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, scrolledtext
 import time
+import openai_analyzer
 
 # Configuration
 # The 11 voices available in the GPT-4o-mini-tts model
@@ -43,30 +44,42 @@ VOICE_ROLES = {
     "computer": "echo"      # Technical voice for code/computer text
 }
 
-# Common style instructions per segment type
+# Enhanced style instructions per segment type inspired by openai.fm
 STYLE_PRESETS = {
     "narrator": [
         "Default (no style instruction)",
-        "Speak in a calm and measured tone, with thoughtful pauses",
-        "Speak with an authoritative tone, like narrating a documentary",
-        "Speak in a mysterious and atmospheric way",
-        "Speak with a sense of wonder and intrigue",
+        "Speak in a warm, engaging storyteller voice",
+        "Speak with a dramatic, cinematic tone",
+        "Narrate with a calm, soothing ASMR-like quality",
+        "Speak with authoritative documentary-style voice",
+        "Narrate with an elegant, poetic quality",
+        "Use a suspenseful, thriller-like delivery",
+        "Speak with a sense of childlike wonder and excitement",
+        "Use a scholarly, academic tone",
         "Custom style..."
     ],
     "dialog": [
         "Default (no style instruction)",
         "Speak with natural conversational inflection",
-        "Speak with emotional expressiveness",
-        "Speak with subtle character distinctions",
-        "Speak as if telling a story to a friend",
+        "Speak with heightened emotional expressiveness",
+        "Use distinct voices for different characters",
+        "Speak with theatrical dramatic flair",
+        "Use a whimsical, playful tone for dialog",
+        "Deliver dialog with subtle emotional undercurrents",
+        "Speak dialog with realistic pauses and hesitations",
+        "Use a casual, relaxed conversational style",
         "Custom style..."
     ],
     "computer": [
         "Default (no style instruction)",
-        "Speak in a technical and precise manner",
-        "Speak with a slightly computerized tone",
-        "Speak with clear articulation of technical terms",
-        "Speak at a slightly slower pace for code segments",
+        "Speak with a precise, technical tone",
+        "Use a slightly robotic, computerized voice",
+        "Explain code with a clear instructional voice",
+        "Speak technical terms with careful articulation",
+        "Use a tutorial-like explanatory tone",
+        "Emphasize syntax and punctuation clearly",
+        "Speak at a measured pace with strategic pauses",
+        "Use a knowledgeable expert's confident tone",
         "Custom style..."
     ]
 }
@@ -76,32 +89,54 @@ DEFAULT_MODEL = "gpt-4o-mini-tts"  # The new model
 MAX_CHUNK_SIZE = 4000  # Characters per chunk (limit for processing)
 
 class TextAnalyzer:
-    """Analyzes text to determine section types and appropriate voices"""
+    """Analyzes text to determine section types and appropriate voices with improved detection"""
     
     def identify_paragraph_type(self, paragraph):
-        """Determine the type of a paragraph based on content patterns"""
+        """Determine the type of a paragraph based on content patterns with enhanced rules"""
+        import re
         
         # Skip empty paragraphs
         if not paragraph.strip():
             return "narrator"
             
-        # Check for code blocks or terminal output
+        # Check for code blocks or technical content with more precise patterns
         if (paragraph.strip().startswith('```') or 
             paragraph.strip().startswith('>') or 
             paragraph.strip().startswith('File:') or
-            re.search(r'Filename:|Log:|Author:|Last Modified', paragraph)):
+            paragraph.strip().startswith('#') or
+            paragraph.strip().startswith('import ') or
+            re.search(r'Filename:|Log:|Author:|Last Modified|\.py|\.json|\.md|\.yaml|\.txt|README', paragraph) or
+            re.search(r'<.*>|def |class |function|import|const|var|let', paragraph) or
+            re.search(r'\[.*\]\(.*\)', paragraph)):
             return "computer"
             
-        # Check for dialogue-heavy paragraphs
-        dialogue_matches = re.findall(r'"[^"]*"', paragraph)
-        if dialogue_matches and len(''.join(dialogue_matches)) > len(paragraph) * 0.3:
+        # Check for dialogue with more comprehensive patterns
+        # Look for quotes and dialogue markers
+        if ('"' in paragraph and paragraph.count('"') >= 2) or paragraph.strip().startswith('"'):
+            # Only classify as dialog if quotes make up a significant portion or it contains conversation indicators
+            dialogue_matches = re.findall(r'"[^"]*"', paragraph)
+            if dialogue_matches and (len(''.join(dialogue_matches)) > len(paragraph) * 0.2 or
+                                    re.search(r'said|asked|replied|responded|whispered|shouted|called|murmured', paragraph)):
+                return "dialog"
+            
+        # Check for direct message-like content
+        if re.search(r'LAX:|Echo7:|Message:|From:|To:|Subject:', paragraph) or paragraph.strip().startswith('>'):
             return "dialog"
             
-        # Default to narrator
+        # Check for UI elements and interactive content
+        if re.search(r'Merge|Delete|Observe|Y/N', paragraph) or re.search(r'\[.*\]', paragraph):
+            return "computer"
+            
+        # Enhanced narrator detection - look for narrative indicators
+        if re.search(r'I felt|I thought|I realized|I tried|I began|I noticed|The realization', paragraph):
+            return "narrator"
+        
+        # Default to narrator for story content
         return "narrator"
     
     def analyze_text(self, full_text):
         """Split text into segments and assign voice types"""
+        import re
         segments = []
         
         # Split by paragraphs (respecting blank lines)
@@ -135,7 +170,65 @@ class TextAnalyzer:
                 segments.append((paragraph_type, paragraph.strip()))
         
         return segments
-
+        
+    def analyze_text_with_context(self, full_text):
+        """Improved analysis that considers context and adjacent paragraphs"""
+        import re
+        segments = []
+        
+        # Split by paragraphs (respecting blank lines)
+        paragraphs = re.split(r'\n\s*\n', full_text)
+        
+        # First pass - basic type identification
+        initial_types = []
+        for paragraph in paragraphs:
+            if not paragraph.strip():
+                initial_types.append(None)
+                continue
+            
+            paragraph_type = self.identify_paragraph_type(paragraph)
+            initial_types.append(paragraph_type)
+        
+        # Second pass - consider context
+        for i, paragraph in enumerate(paragraphs):
+            if not paragraph.strip():
+                continue
+                
+            current_type = initial_types[i]
+            
+            # Look at surrounding paragraphs to improve classification
+            prev_type = initial_types[i-1] if i > 0 and initial_types[i-1] else None
+            next_type = initial_types[i+1] if i < len(initial_types)-1 and initial_types[i+1] else None
+            
+            # Consistency rules
+            # If we have dialog sandwiched between narrator, check if it's really dialog
+            if current_type == "dialog" and prev_type == "narrator" and next_type == "narrator":
+                # If it's a short paragraph with minimal dialogue markers, it might be misclassified
+                if len(paragraph) < 200 and '"' not in paragraph:
+                    current_type = "narrator"
+            
+            # For longer paragraphs, check if we need to further split
+            if len(paragraph) > 1000:
+                # Split by sentences for long paragraphs
+                sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+                current_chunk = ""
+                
+                for sentence in sentences:
+                    if len(current_chunk) + len(sentence) > 1000:
+                        if current_chunk:
+                            segments.append((current_type, current_chunk.strip()))
+                            current_chunk = sentence
+                        else:
+                            segments.append((current_type, sentence.strip()))
+                    else:
+                        current_chunk += " " + sentence if current_chunk else sentence
+                
+                if current_chunk:
+                    segments.append((current_type, current_chunk.strip()))
+            else:
+                segments.append((current_type, paragraph.strip()))
+        
+        return segments
 class TextFormatter:
     """Enhances text for better TTS performance"""
     
@@ -170,7 +263,9 @@ class EnhancedTTSConverter:
     def __init__(self):
         self.api_key = os.getenv("OPENAI_API_KEY") or "OpenAI-API-Key-Here"
         openai.api_key = self.api_key
-        self.analyzer = TextAnalyzer()
+        # Replace the standard analyzer with our enhanced version
+      # self.analyzer = TextAnalyzer()  # Old line
+        self.analyzer = OpenAIEnhancedAnalyzer(self.api_key)  # New line
         self.formatter = TextFormatter()
         
     def get_text_from_file(self, file_path):
@@ -188,7 +283,7 @@ class EnhancedTTSConverter:
     
     def process_text(self, text, voice_roles):
         """Process text into voice-assigned segments"""
-        segments = self.analyzer.analyze_text(text)
+        segments = self.analyzer.batch_analyze(text)
         enhanced_segments = []
         
         for text_type, content in segments:
@@ -769,13 +864,23 @@ class EnhancedTTSApp:
             self.style_instructions["computer"] = selected_style
     
     def preview_segmentation(self):
-        """Preview text segmentation"""
+        """Preview text segmentation with OpenAI-enhanced classification"""
         filepath = self.file_path_var.get()
         
         if not filepath:
             messagebox.showwarning("Warning", "Please select a file first")
             return
             
+        # Confirm API usage
+        confirm = messagebox.askyesno(
+            "Confirm API Usage", 
+            "This will use the OpenAI API for text classification, which may incur costs. Continue?"
+        )    
+        
+        if not confirm:
+            return
+        
+        
         try:
             # Get text from file
             text = self.converter.get_text_from_file(filepath)
@@ -788,13 +893,23 @@ class EnhancedTTSApp:
             # Update style instructions
             self.update_style_instructions()
             
+            # Show a loading message
+            self.log_message("Analyzing text with OpenAI... this may take a moment")
+            self.root.update_idletasks()
+            
             # Process text to get segments
             segments = self.converter.process_text(text, self.voice_roles)
             
             # Display segmented text with voice and style assignments
             self.preview_text.delete(1.0, tk.END)
             
+            # Count segment types for reporting
+            segment_counts = {"narrator": 0, "dialog": 0, "computer": 0}
+            
             for segment_type, voice, content in segments:
+                # Count the segment type
+                segment_counts[segment_type] = segment_counts.get(segment_type, 0) + 1
+                
                 # Get the style for this segment
                 style = self.style_instructions.get(segment_type, "")
                 style_info = f" - Style: {style}" if style else ""
@@ -809,12 +924,16 @@ class EnhancedTTSApp:
             # Configure tag for segment headers
             self.preview_text.tag_configure("segment_header", foreground="blue", font=("TkDefaultFont", 9, "bold"))
             
-            self.log_message(f"Identified {len(segments)} text segments")
+            # Log segment type statistics
+            self.log_message(f"Analysis complete! Identified {len(segments)} text segments:")
+            self.log_message(f"- Narrator segments: {segment_counts['narrator']}")
+            self.log_message(f"- Dialog segments: {segment_counts['dialog']}")
+            self.log_message(f"- Computer segments: {segment_counts['computer']}")
             
         except Exception as e:
             self.log_message(f"Error previewing segmentation: {str(e)}")
             messagebox.showerror("Error", f"Error previewing segmentation: {str(e)}")
-    
+        
     def convert_file(self):
         """Convert the file to speech"""
         filepath = self.file_path_var.get()
