@@ -19,7 +19,6 @@ from docx import Document
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, scrolledtext
 import time
-import openai_analyzer
 
 # Configuration
 # The 11 voices available in the GPT-4o-mini-tts model
@@ -44,42 +43,30 @@ VOICE_ROLES = {
     "computer": "echo"      # Technical voice for code/computer text
 }
 
-# Enhanced style instructions per segment type inspired by openai.fm
+# Common style instructions per segment type
 STYLE_PRESETS = {
     "narrator": [
         "Default (no style instruction)",
-        "Speak in a warm, engaging storyteller voice",
-        "Speak with a dramatic, cinematic tone",
-        "Narrate with a calm, soothing ASMR-like quality",
-        "Speak with authoritative documentary-style voice",
-        "Narrate with an elegant, poetic quality",
-        "Use a suspenseful, thriller-like delivery",
-        "Speak with a sense of childlike wonder and excitement",
-        "Use a scholarly, academic tone",
+        "Speak in a calm and measured tone, with thoughtful pauses",
+        "Speak with an authoritative tone, like narrating a documentary",
+        "Speak in a mysterious and atmospheric way",
+        "Speak with a sense of wonder and intrigue",
         "Custom style..."
     ],
     "dialog": [
         "Default (no style instruction)",
         "Speak with natural conversational inflection",
-        "Speak with heightened emotional expressiveness",
-        "Use distinct voices for different characters",
-        "Speak with theatrical dramatic flair",
-        "Use a whimsical, playful tone for dialog",
-        "Deliver dialog with subtle emotional undercurrents",
-        "Speak dialog with realistic pauses and hesitations",
-        "Use a casual, relaxed conversational style",
+        "Speak with emotional expressiveness",
+        "Speak with subtle character distinctions",
+        "Speak as if telling a story to a friend",
         "Custom style..."
     ],
     "computer": [
         "Default (no style instruction)",
-        "Speak with a precise, technical tone",
-        "Use a slightly robotic, computerized voice",
-        "Explain code with a clear instructional voice",
-        "Speak technical terms with careful articulation",
-        "Use a tutorial-like explanatory tone",
-        "Emphasize syntax and punctuation clearly",
-        "Speak at a measured pace with strategic pauses",
-        "Use a knowledgeable expert's confident tone",
+        "Speak in a technical and precise manner",
+        "Speak with a slightly computerized tone",
+        "Speak with clear articulation of technical terms",
+        "Speak at a slightly slower pace for code segments",
         "Custom style..."
     ]
 }
@@ -87,56 +74,122 @@ STYLE_PRESETS = {
 # Default settings
 DEFAULT_MODEL = "gpt-4o-mini-tts"  # The new model
 MAX_CHUNK_SIZE = 4000  # Characters per chunk (limit for processing)
+STYLES_FILE = "tts_styles.json"
+
+# Style Manager for saving and loading custom styles
+class StyleManager:
+    """Manages custom style presets for TTS"""
+    
+    def __init__(self, styles_file=STYLES_FILE):
+        self.styles_file = styles_file
+        self.custom_styles = self._load_styles()
+        
+    def _load_styles(self):
+        """Load custom styles from JSON file"""
+        if os.path.exists(self.styles_file):
+            try:
+                with open(self.styles_file, 'r') as f:
+                    return json.load(f)
+            except Exception as e:
+                print(f"Error loading styles: {str(e)}")
+                return self._get_default_custom_styles()
+        else:
+            return self._get_default_custom_styles()
+            
+    def _get_default_custom_styles(self):
+        """Return default structure for custom styles"""
+        return {
+            "narrator": [],
+            "dialog": [],
+            "computer": []
+        }
+        
+    def save_style(self, segment_type, style_name, style_instruction):
+        """Save a new custom style"""
+        if segment_type not in self.custom_styles:
+            self.custom_styles[segment_type] = []
+            
+        # Check if the style already exists
+        for i, (name, _) in enumerate(self.custom_styles[segment_type]):
+            if name == style_name:
+                # Update existing style
+                self.custom_styles[segment_type][i] = (style_name, style_instruction)
+                self._save_to_file()
+                return
+                
+        # Add new style
+        self.custom_styles[segment_type].append((style_name, style_instruction))
+        self._save_to_file()
+        
+    def delete_style(self, segment_type, style_name):
+        """Delete a custom style"""
+        if segment_type in self.custom_styles:
+            self.custom_styles[segment_type] = [
+                (name, inst) for name, inst in self.custom_styles[segment_type] 
+                if name != style_name
+            ]
+            self._save_to_file()
+            
+    def get_custom_styles(self, segment_type):
+        """Get all custom styles for a segment type"""
+        if segment_type in self.custom_styles:
+            return self.custom_styles[segment_type]
+        return []
+        
+    def get_all_style_names(self, segment_type):
+        """Get all style names for a segment type (built-in + custom)"""
+        builtin = STYLE_PRESETS.get(segment_type, [])
+        custom = [name for name, _ in self.get_custom_styles(segment_type)]
+        return builtin + custom
+        
+    def get_style_instruction(self, segment_type, style_name):
+        """Get the instruction for a specific style name"""
+        # Check if it's a built-in style
+        if style_name in STYLE_PRESETS.get(segment_type, []):
+            return style_name
+            
+        # Check custom styles
+        for name, instruction in self.get_custom_styles(segment_type):
+            if name == style_name:
+                return instruction
+                
+        return ""
+        
+    def _save_to_file(self):
+        """Save custom styles to JSON file"""
+        try:
+            with open(self.styles_file, 'w') as f:
+                json.dump(self.custom_styles, f, indent=2)
+        except Exception as e:
+            print(f"Error saving styles: {str(e)}")
 
 class TextAnalyzer:
-    """Analyzes text to determine section types and appropriate voices with improved detection"""
+    """Analyzes text to determine section types and appropriate voices"""
     
     def identify_paragraph_type(self, paragraph):
-        """Determine the type of a paragraph based on content patterns with enhanced rules"""
-        import re
+        """Determine the type of a paragraph based on content patterns"""
         
         # Skip empty paragraphs
         if not paragraph.strip():
             return "narrator"
             
-        # Check for code blocks or technical content with more precise patterns
+        # Check for code blocks or terminal output
         if (paragraph.strip().startswith('```') or 
             paragraph.strip().startswith('>') or 
             paragraph.strip().startswith('File:') or
-            paragraph.strip().startswith('#') or
-            paragraph.strip().startswith('import ') or
-            re.search(r'Filename:|Log:|Author:|Last Modified|\.py|\.json|\.md|\.yaml|\.txt|README', paragraph) or
-            re.search(r'<.*>|def |class |function|import|const|var|let', paragraph) or
-            re.search(r'\[.*\]\(.*\)', paragraph)):
+            re.search(r'Filename:|Log:|Author:|Last Modified', paragraph)):
             return "computer"
             
-        # Check for dialogue with more comprehensive patterns
-        # Look for quotes and dialogue markers
-        if ('"' in paragraph and paragraph.count('"') >= 2) or paragraph.strip().startswith('"'):
-            # Only classify as dialog if quotes make up a significant portion or it contains conversation indicators
-            dialogue_matches = re.findall(r'"[^"]*"', paragraph)
-            if dialogue_matches and (len(''.join(dialogue_matches)) > len(paragraph) * 0.2 or
-                                    re.search(r'said|asked|replied|responded|whispered|shouted|called|murmured', paragraph)):
-                return "dialog"
-            
-        # Check for direct message-like content
-        if re.search(r'LAX:|Echo7:|Message:|From:|To:|Subject:', paragraph) or paragraph.strip().startswith('>'):
+        # Check for dialogue-heavy paragraphs
+        dialogue_matches = re.findall(r'"[^"]*"', paragraph)
+        if dialogue_matches and len(''.join(dialogue_matches)) > len(paragraph) * 0.3:
             return "dialog"
             
-        # Check for UI elements and interactive content
-        if re.search(r'Merge|Delete|Observe|Y/N', paragraph) or re.search(r'\[.*\]', paragraph):
-            return "computer"
-            
-        # Enhanced narrator detection - look for narrative indicators
-        if re.search(r'I felt|I thought|I realized|I tried|I began|I noticed|The realization', paragraph):
-            return "narrator"
-        
-        # Default to narrator for story content
+        # Default to narrator
         return "narrator"
     
     def analyze_text(self, full_text):
         """Split text into segments and assign voice types"""
-        import re
         segments = []
         
         # Split by paragraphs (respecting blank lines)
@@ -170,65 +223,7 @@ class TextAnalyzer:
                 segments.append((paragraph_type, paragraph.strip()))
         
         return segments
-        
-    def analyze_text_with_context(self, full_text):
-        """Improved analysis that considers context and adjacent paragraphs"""
-        import re
-        segments = []
-        
-        # Split by paragraphs (respecting blank lines)
-        paragraphs = re.split(r'\n\s*\n', full_text)
-        
-        # First pass - basic type identification
-        initial_types = []
-        for paragraph in paragraphs:
-            if not paragraph.strip():
-                initial_types.append(None)
-                continue
-            
-            paragraph_type = self.identify_paragraph_type(paragraph)
-            initial_types.append(paragraph_type)
-        
-        # Second pass - consider context
-        for i, paragraph in enumerate(paragraphs):
-            if not paragraph.strip():
-                continue
-                
-            current_type = initial_types[i]
-            
-            # Look at surrounding paragraphs to improve classification
-            prev_type = initial_types[i-1] if i > 0 and initial_types[i-1] else None
-            next_type = initial_types[i+1] if i < len(initial_types)-1 and initial_types[i+1] else None
-            
-            # Consistency rules
-            # If we have dialog sandwiched between narrator, check if it's really dialog
-            if current_type == "dialog" and prev_type == "narrator" and next_type == "narrator":
-                # If it's a short paragraph with minimal dialogue markers, it might be misclassified
-                if len(paragraph) < 200 and '"' not in paragraph:
-                    current_type = "narrator"
-            
-            # For longer paragraphs, check if we need to further split
-            if len(paragraph) > 1000:
-                # Split by sentences for long paragraphs
-                sentences = re.split(r'(?<=[.!?])\s+', paragraph)
-                current_chunk = ""
-                
-                for sentence in sentences:
-                    if len(current_chunk) + len(sentence) > 1000:
-                        if current_chunk:
-                            segments.append((current_type, current_chunk.strip()))
-                            current_chunk = sentence
-                        else:
-                            segments.append((current_type, sentence.strip()))
-                    else:
-                        current_chunk += " " + sentence if current_chunk else sentence
-                
-                if current_chunk:
-                    segments.append((current_type, current_chunk.strip()))
-            else:
-                segments.append((current_type, paragraph.strip()))
-        
-        return segments
+
 class TextFormatter:
     """Enhances text for better TTS performance"""
     
@@ -261,13 +256,53 @@ class TextFormatter:
 
 class EnhancedTTSConverter:
     def __init__(self):
-        self.api_key = os.getenv("OPENAI_API_KEY") or "OpenAI-API-Key-Here"
+        self.api_key = os.getenv("OPENAI_API_KEY") or "Your_OpenAI_API_KEY_HERE"
         openai.api_key = self.api_key
-        # Replace the standard analyzer with our enhanced version
-      # self.analyzer = TextAnalyzer()  # Old line
-        self.analyzer = OpenAIEnhancedAnalyzer(self.api_key)  # New line
+        self.analyzer = TextAnalyzer()
         self.formatter = TextFormatter()
         
+    def preview_voice_style(self, text, voice, instructions, model=DEFAULT_MODEL):
+        """Generate a short preview audio using specified voice and style"""
+        # Create a temporary file for the preview
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as temp_file:
+            preview_file = temp_file.name
+        
+        # Get a short segment for preview (max 100 chars)
+        if len(text) > 100:
+            preview_text = text[:100] + "..."
+        else:
+            preview_text = text
+            
+        # Create the preview audio
+        try:
+            self.text_to_speech(preview_text, preview_file, voice, instructions, model)
+            return preview_file
+        except Exception as e:
+            print(f"Error creating preview: {str(e)}")
+            if os.path.exists(preview_file):
+                os.remove(preview_file)
+            return None
+
+    def process_text(self, text, voice_roles, single_voice_mode=False, single_voice=None):
+        """Process text into voice-assigned segments with single voice mode support"""
+        segments = self.analyzer.analyze_text(text)
+        enhanced_segments = []
+        
+        for text_type, content in segments:
+            formatted_text = self.formatter.format_for_tts(text_type, content)
+            
+            if single_voice_mode and single_voice:
+                # In single voice mode, use the specified voice for all segments
+                voice = single_voice
+            else:
+                # Otherwise use the voice assigned to this type
+                voice = voice_roles.get(text_type, voice_roles["narrator"])
+                
+            enhanced_segments.append((text_type, voice, formatted_text))
+            
+        return enhanced_segments
+    
+    
     def get_text_from_file(self, file_path):
         """Extract text from supported file formats"""
         ext = os.path.splitext(file_path)[-1].lower()
@@ -281,20 +316,7 @@ class EnhancedTTSConverter:
         else:
             raise ValueError("Unsupported file format. Use .txt or .docx")
     
-    def process_text(self, text, voice_roles):
-        """Process text into voice-assigned segments"""
-        segments = self.analyzer.batch_analyze(text)
-        enhanced_segments = []
-        
-        for text_type, content in segments:
-            formatted_text = self.formatter.format_for_tts(text_type, content)
-            
-            # Map text type to voice based on user settings
-            voice = voice_roles.get(text_type, voice_roles["narrator"])
-                
-            enhanced_segments.append((text_type, voice, formatted_text))
-            
-        return enhanced_segments
+
         
     def text_to_speech(self, text, filename, voice, instructions="", model=DEFAULT_MODEL):
         """Convert text to speech using OpenAI's TTS API"""
@@ -470,13 +492,14 @@ class EnhancedTTSConverter:
             if os.path.exists(file_list_path):
                 os.unlink(file_list_path)
     
-    def convert_fiction_to_speech(self, input_file, output_dir, voice_roles, style_instructions, model=DEFAULT_MODEL):
-        """Convert fiction text to speech with segment-specific style instructions"""
+    def convert_fiction_to_speech(self, input_file, output_dir, voice_roles, style_instructions, 
+                            model=DEFAULT_MODEL, single_voice_mode=False, single_voice=None):
+        """Convert fiction text to speech with segment-specific style instructions and single voice option"""
         # Extract the text from the file
         text = self.get_text_from_file(input_file)
         
-        # Process the text into voice-assigned segments
-        segments = self.process_text(text, voice_roles)
+        # Process the text into voice-assigned segments (with single voice mode if enabled)
+        segments = self.process_text(text, voice_roles, single_voice_mode, single_voice)
         
         # Create the output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
@@ -525,11 +548,23 @@ class EnhancedTTSApp:
             "dialog": "",
             "computer": ""
         }
-        self.setup_ui()
         
+        # New instance of StyleManager
+        self.style_manager = StyleManager()
+        
+        # Single voice mode
+        self.single_voice_mode = False
+        self.single_voice = "onyx"  # Default single voice
+        
+        # Preview audio handling
+        self.preview_file = None
+        self.preview_playing = False
+        
+        self.setup_ui()
+    
     def setup_ui(self):
         """Set up the user interface with landscape orientation"""
-        self.root.title("Fiction Text-to-Speech - Segment-Specific Styles")
+        self.root.title("Fiction Text-to-Speech - Enhanced Features")
         self.root.geometry("950x680")
         
         # Configure main layout - split into left and right sides
@@ -575,6 +610,39 @@ class EnhancedTTSApp:
         self.output_dir_var = tk.StringVar()
         output_entry = ttk.Entry(output_frame, textvariable=self.output_dir_var)
         output_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        
+        # === NEW: Single Voice Mode Control ===
+        voice_mode_frame = ttk.LabelFrame(left_frame, text="Voice Mode", padding="10")
+        voice_mode_frame.pack(fill=tk.X, pady=5)
+
+        # Single voice mode toggle
+        self.single_voice_mode_var = tk.BooleanVar(value=self.single_voice_mode)
+        single_voice_check = ttk.Checkbutton(
+            voice_mode_frame,
+            text="Use Single Voice Mode",
+            variable=self.single_voice_mode_var,
+            command=self.toggle_voice_mode
+        )
+        single_voice_check.grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+
+        # Single voice selection
+        ttk.Label(voice_mode_frame, text="Single Voice:").grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        self.single_voice_var = tk.StringVar(value=self.single_voice)
+        single_voice_combo = ttk.Combobox(
+            voice_mode_frame,
+            textvariable=self.single_voice_var,
+            values=VOICES,
+            state="readonly",
+            width=12
+        )
+        single_voice_combo.grid(row=0, column=2, padx=5, pady=5)
+
+        # Help text
+        ttk.Label(
+            voice_mode_frame, 
+            text="Note: Single voice mode will use one voice with different styles per segment type",
+            font=("TkDefaultFont", 8)
+        ).grid(row=1, column=0, columnspan=3, sticky=tk.W, padx=5)
         
         # Voice configuration
         voice_frame = ttk.LabelFrame(left_frame, text="Voice Configuration", padding="10")
@@ -649,16 +717,20 @@ class EnhancedTTSApp:
         
         # Narrator style settings
         ttk.Label(narrator_frame, text="Style Preset:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        
+        # Get the narrator styles (built-in + custom)
+        narrator_styles = STYLE_PRESETS["narrator"] + [name for name, _ in self.style_manager.get_custom_styles("narrator")]
+        
         self.narrator_style_var = tk.StringVar(value=STYLE_PRESETS["narrator"][0])
-        narrator_style_combo = ttk.Combobox(
+        self.narrator_style_combo = ttk.Combobox(
             narrator_frame,
             textvariable=self.narrator_style_var,
-            values=STYLE_PRESETS["narrator"],
+            values=narrator_styles,
             state="readonly",
             width=40
         )
-        narrator_style_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
-        narrator_style_combo.bind("<<ComboboxSelected>>", lambda e: self.on_style_selected("narrator"))
+        self.narrator_style_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        self.narrator_style_combo.bind("<<ComboboxSelected>>", lambda e: self.on_style_selected("narrator"))
         
         ttk.Label(narrator_frame, text="Custom Style:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.narrator_custom_var = tk.StringVar()
@@ -666,18 +738,47 @@ class EnhancedTTSApp:
         self.narrator_custom_entry.grid(row=1, column=1, sticky=tk.W+tk.E, padx=5, pady=5)
         self.narrator_custom_entry.config(state="disabled")
         
+        # Add preview button for narrator
+        preview_narrator_btn = ttk.Button(
+            narrator_frame,
+            text="Preview",
+            command=lambda: self.preview_voice_style("narrator")
+        )
+        preview_narrator_btn.grid(row=0, column=2, padx=5, pady=5)
+
+        # Add style management buttons for narrator
+        style_mgt_frame = ttk.Frame(narrator_frame)
+        style_mgt_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W+tk.E, pady=10)
+
+        save_style_btn = ttk.Button(
+            style_mgt_frame,
+            text="Save New Style",
+            command=lambda: self.save_custom_style("narrator")
+        )
+        save_style_btn.pack(side=tk.LEFT, padx=5)
+
+        # Custom style name entry
+        ttk.Label(style_mgt_frame, text="Style Name:").pack(side=tk.LEFT, padx=(10, 0))
+        self.narrator_style_name_var = tk.StringVar()
+        narrator_style_name_entry = ttk.Entry(style_mgt_frame, textvariable=self.narrator_style_name_var, width=20)
+        narrator_style_name_entry.pack(side=tk.LEFT, padx=5)
+        
         # Dialog style settings
         ttk.Label(dialog_frame, text="Style Preset:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        
+        # Get the dialog styles (built-in + custom)
+        dialog_styles = STYLE_PRESETS["dialog"] + [name for name, _ in self.style_manager.get_custom_styles("dialog")]
+        
         self.dialog_style_var = tk.StringVar(value=STYLE_PRESETS["dialog"][0])
-        dialog_style_combo = ttk.Combobox(
+        self.dialog_style_combo = ttk.Combobox(
             dialog_frame,
             textvariable=self.dialog_style_var,
-            values=STYLE_PRESETS["dialog"],
+            values=dialog_styles,
             state="readonly",
             width=40
         )
-        dialog_style_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
-        dialog_style_combo.bind("<<ComboboxSelected>>", lambda e: self.on_style_selected("dialog"))
+        self.dialog_style_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        self.dialog_style_combo.bind("<<ComboboxSelected>>", lambda e: self.on_style_selected("dialog"))
         
         ttk.Label(dialog_frame, text="Custom Style:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.dialog_custom_var = tk.StringVar()
@@ -685,24 +786,97 @@ class EnhancedTTSApp:
         self.dialog_custom_entry.grid(row=1, column=1, sticky=tk.W+tk.E, padx=5, pady=5)
         self.dialog_custom_entry.config(state="disabled")
         
+        # Add preview button for dialog
+        preview_dialog_btn = ttk.Button(
+            dialog_frame,
+            text="Preview",
+            command=lambda: self.preview_voice_style("dialog")
+        )
+        preview_dialog_btn.grid(row=0, column=2, padx=5, pady=5)
+
+        # Add style management for dialog
+        dialog_mgt_frame = ttk.Frame(dialog_frame)
+        dialog_mgt_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W+tk.E, pady=10)
+
+        save_dialog_btn = ttk.Button(
+            dialog_mgt_frame,
+            text="Save New Style",
+            command=lambda: self.save_custom_style("dialog")
+        )
+        save_dialog_btn.pack(side=tk.LEFT, padx=5)
+
+        # Custom style name entry for dialog
+        ttk.Label(dialog_mgt_frame, text="Style Name:").pack(side=tk.LEFT, padx=(10, 0))
+        self.dialog_style_name_var = tk.StringVar()
+        dialog_style_name_entry = ttk.Entry(dialog_mgt_frame, textvariable=self.dialog_style_name_var, width=20)
+        dialog_style_name_entry.pack(side=tk.LEFT, padx=5)
+        
         # Computer style settings
         ttk.Label(computer_frame, text="Style Preset:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        
+        # Get the computer styles (built-in + custom)
+        computer_styles = STYLE_PRESETS["computer"] + [name for name, _ in self.style_manager.get_custom_styles("computer")]
+        
         self.computer_style_var = tk.StringVar(value=STYLE_PRESETS["computer"][0])
-        computer_style_combo = ttk.Combobox(
+        self.computer_style_combo = ttk.Combobox(
             computer_frame,
             textvariable=self.computer_style_var,
-            values=STYLE_PRESETS["computer"],
+            values=computer_styles,
             state="readonly",
             width=40
         )
-        computer_style_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
-        computer_style_combo.bind("<<ComboboxSelected>>", lambda e: self.on_style_selected("computer"))
+        self.computer_style_combo.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        self.computer_style_combo.bind("<<ComboboxSelected>>", lambda e: self.on_style_selected("computer"))
         
         ttk.Label(computer_frame, text="Custom Style:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.computer_custom_var = tk.StringVar()
         self.computer_custom_entry = ttk.Entry(computer_frame, textvariable=self.computer_custom_var, width=40)
         self.computer_custom_entry.grid(row=1, column=1, sticky=tk.W+tk.E, padx=5, pady=5)
         self.computer_custom_entry.config(state="disabled")
+        
+        # Add preview button for computer
+        preview_computer_btn = ttk.Button(
+            computer_frame,
+            text="Preview",
+            command=lambda: self.preview_voice_style("computer")
+        )
+        preview_computer_btn.grid(row=0, column=2, padx=5, pady=5)
+
+        # Add style management for computer
+        computer_mgt_frame = ttk.Frame(computer_frame)
+        computer_mgt_frame.grid(row=2, column=0, columnspan=3, sticky=tk.W+tk.E, pady=10)
+
+        save_computer_btn = ttk.Button(
+            computer_mgt_frame,
+            text="Save New Style",
+            command=lambda: self.save_custom_style("computer")
+        )
+        save_computer_btn.pack(side=tk.LEFT, padx=5)
+
+        # Custom style name entry for computer
+        ttk.Label(computer_mgt_frame, text="Style Name:").pack(side=tk.LEFT, padx=(10, 0))
+        self.computer_style_name_var = tk.StringVar()
+        computer_style_name_entry = ttk.Entry(computer_mgt_frame, textvariable=self.computer_style_name_var, width=20)
+        computer_style_name_entry.pack(side=tk.LEFT, padx=5)
+        
+        # Preview player controls
+        preview_frame = ttk.LabelFrame(left_frame, text="Preview Player", padding="10")
+        preview_frame.pack(fill=tk.X, pady=5)
+
+        preview_controls = ttk.Frame(preview_frame)
+        preview_controls.pack(fill=tk.X, expand=True)
+
+        self.preview_status_var = tk.StringVar(value="No preview loaded")
+        preview_status = ttk.Label(preview_controls, textvariable=self.preview_status_var)
+        preview_status.pack(side=tk.LEFT, padx=5)
+
+        play_preview_btn = ttk.Button(
+            preview_controls,
+            text="Play Preview",
+            command=self.play_preview,
+            width=15
+        )
+        play_preview_btn.pack(side=tk.RIGHT, padx=5)
         
         # Action buttons
         button_frame = ttk.Frame(left_frame)
@@ -759,6 +933,153 @@ class EnhancedTTSApp:
         self.log_text.pack(fill=tk.BOTH, expand=True)
         self.log_text.config(state=tk.DISABLED)
     
+    def toggle_voice_mode(self):
+        """Handle single voice mode toggle"""
+        self.single_voice_mode = self.single_voice_mode_var.get()
+        
+        # Enable/disable voice selection based on mode
+        state = "disabled" if self.single_voice_mode else "readonly"
+        for combo in [self.narrator_style_combo, self.dialog_style_combo, self.computer_style_combo]:
+            combo.config(state="readonly")  # Style combos always enabled
+            
+        self.log_message(f"Single voice mode {'enabled' if self.single_voice_mode else 'disabled'}")
+        
+        if self.single_voice_mode:
+            self.log_message(f"Using voice '{self.single_voice_var.get()}' with different styles per segment type")
+
+    def preview_voice_style(self, segment_type):
+        """Preview the voice and style for a segment type"""
+        # Get voice and style based on segment type
+        if self.single_voice_mode:
+            voice = self.single_voice_var.get()
+        else:
+            if segment_type == "narrator":
+                voice = self.narrator_var.get()
+            elif segment_type == "dialog":
+                voice = self.dialog_var.get()
+            elif segment_type == "computer":
+                voice = self.computer_var.get()
+        
+        # Get the style instruction
+        style = self.style_instructions.get(segment_type, "")
+        
+        # Get preview text based on segment type
+        if segment_type == "narrator":
+            preview_text = "This is a preview of the narrator voice with the selected style. It demonstrates how the system will read narrative passages in your text."
+        elif segment_type == "dialog":
+            preview_text = '"This is a preview of the dialog voice," said the character, "demonstrating how the system will read conversations in your text."'
+        elif segment_type == "computer":
+            preview_text = "def preview_function():\n    print('This is a preview of the computer voice')\n    # It demonstrates how code and technical content will sound"
+        
+        # Generate preview
+        try:
+            self.log_message(f"Generating preview for {segment_type} with voice '{voice}'")
+            
+            if style:
+                self.log_message(f"Using style: '{style}'")
+            
+            # Clear any existing preview
+            if self.preview_file and os.path.exists(self.preview_file):
+                os.remove(self.preview_file)
+            
+            # Generate new preview
+            self.preview_file = self.converter.preview_voice_style(
+                preview_text, 
+                voice, 
+                style,
+                self.model_var.get()
+            )
+            
+            if self.preview_file:
+                self.preview_status_var.set(f"Preview ready: {segment_type.capitalize()} ({voice})")
+                self.log_message("Preview generated successfully")
+            else:
+                self.preview_status_var.set("Preview failed to generate")
+                
+        except Exception as e:
+            self.log_message(f"Error generating preview: {str(e)}")
+            messagebox.showerror("Preview Error", f"Failed to generate preview: {str(e)}")
+
+    def play_preview(self):
+        """Play the current preview audio file"""
+        if not self.preview_file or not os.path.exists(self.preview_file):
+            messagebox.showinfo("Preview", "No preview available. Generate a preview first.")
+            return
+        
+        try:
+            # Use platform-specific commands to play audio
+            if os.name == "nt":  # Windows
+                os.startfile(self.preview_file)
+            elif os.name == "posix":  # macOS or Linux
+                if "darwin" in os.sys.platform:  # macOS
+                    subprocess.call(["open", self.preview_file])
+                else:  # Linux
+                    subprocess.call(["xdg-open", self.preview_file])
+                    
+            self.log_message("Playing preview audio")
+            
+        except Exception as e:
+            self.log_message(f"Error playing preview: {str(e)}")
+            messagebox.showerror("Playback Error", f"Failed to play preview: {str(e)}")
+
+    def save_custom_style(self, segment_type):
+        """Save a custom style for a segment type"""
+        # Get style name and instruction based on segment type
+        if segment_type == "narrator":
+            style_name = self.narrator_style_name_var.get().strip()
+            if self.narrator_style_var.get() == "Custom style...":
+                style_instruction = self.narrator_custom_var.get()
+            else:
+                style_instruction = self.style_instructions["narrator"]
+        elif segment_type == "dialog":
+            style_name = self.dialog_style_name_var.get().strip()
+            if self.dialog_style_var.get() == "Custom style...":
+                style_instruction = self.dialog_custom_var.get()
+            else:
+                style_instruction = self.style_instructions["dialog"]
+        elif segment_type == "computer":
+            style_name = self.computer_style_name_var.get().strip()
+            if self.computer_style_var.get() == "Custom style...":
+                style_instruction = self.computer_custom_var.get()
+            else:
+                style_instruction = self.style_instructions["computer"]
+        
+        # Validate input
+        if not style_name:
+            messagebox.showwarning("Input Error", "Please enter a name for the custom style")
+            return
+            
+        if not style_instruction:
+            messagebox.showwarning("Input Error", "Please enter a style instruction")
+            return
+            
+        # Save the style
+        try:
+            self.style_manager.save_style(segment_type, style_name, style_instruction)
+            self.log_message(f"Saved custom '{segment_type}' style: {style_name}")
+            
+            # Update the combobox with new styles
+            if segment_type == "narrator":
+                narrator_styles = STYLE_PRESETS["narrator"] + [name for name, _ in self.style_manager.get_custom_styles("narrator")]
+                self.narrator_style_combo.config(values=narrator_styles)
+                self.narrator_style_var.set(style_name)  # Select the new style
+                self.narrator_style_name_var.set("")  # Clear the name field
+            elif segment_type == "dialog":
+                dialog_styles = STYLE_PRESETS["dialog"] + [name for name, _ in self.style_manager.get_custom_styles("dialog")]
+                self.dialog_style_combo.config(values=dialog_styles)
+                self.dialog_style_var.set(style_name)
+                self.dialog_style_name_var.set("")
+            elif segment_type == "computer":
+                computer_styles = STYLE_PRESETS["computer"] + [name for name, _ in self.style_manager.get_custom_styles("computer")]
+                self.computer_style_combo.config(values=computer_styles)
+                self.computer_style_var.set(style_name)
+                self.computer_style_name_var.set("")
+                
+            messagebox.showinfo("Style Saved", f"Custom style '{style_name}' saved successfully")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save style: {str(e)}")
+    
     def on_style_selected(self, segment_type):
         """Handle style preset selection for a specific segment type"""
         if segment_type == "narrator":
@@ -771,7 +1092,13 @@ class EnhancedTTSApp:
                 if selected_style == "Default (no style instruction)":
                     self.style_instructions["narrator"] = ""
                 else:
-                    self.style_instructions["narrator"] = selected_style
+                    # Check if it's a custom style (not in built-in list)
+                    if selected_style not in STYLE_PRESETS["narrator"]:
+                        # Get instruction from style manager
+                        instruction = self.style_manager.get_style_instruction("narrator", selected_style)
+                        self.style_instructions["narrator"] = instruction
+                    else:
+                        self.style_instructions["narrator"] = selected_style
         
         elif segment_type == "dialog":
             selected_style = self.dialog_style_var.get()
@@ -783,7 +1110,12 @@ class EnhancedTTSApp:
                 if selected_style == "Default (no style instruction)":
                     self.style_instructions["dialog"] = ""
                 else:
-                    self.style_instructions["dialog"] = selected_style
+                    # Check if it's a custom style
+                    if selected_style not in STYLE_PRESETS["dialog"]:
+                        instruction = self.style_manager.get_style_instruction("dialog", selected_style)
+                        self.style_instructions["dialog"] = instruction
+                    else:
+                        self.style_instructions["dialog"] = selected_style
         
         elif segment_type == "computer":
             selected_style = self.computer_style_var.get()
@@ -795,8 +1127,13 @@ class EnhancedTTSApp:
                 if selected_style == "Default (no style instruction)":
                     self.style_instructions["computer"] = ""
                 else:
-                    self.style_instructions["computer"] = selected_style
-    
+                    # Check if it's a custom style
+                    if selected_style not in STYLE_PRESETS["computer"]:
+                        instruction = self.style_manager.get_style_instruction("computer", selected_style)
+                        self.style_instructions["computer"] = instruction
+                    else:
+                        self.style_instructions["computer"] = selected_style
+                        
     def log_message(self, message):
         """Add message to log with timestamp"""
         timestamp = time.strftime("%H:%M:%S", time.localtime())
@@ -810,7 +1147,6 @@ class EnhancedTTSApp:
         # Update status
         self.status_var.set(message)
         self.root.update_idletasks()
-    
     def browse_file(self):
         """Handle file browsing"""
         filepath = filedialog.askopenfilename(
@@ -825,7 +1161,8 @@ class EnhancedTTSApp:
             default_output = os.path.dirname(filepath)
             if not self.output_dir_var.get():
                 self.output_dir_var.set(default_output)
-    
+
+# This line has incorrect indentation - it should have 4 spaces, not a tab
     def browse_output_dir(self):
         """Handle output directory selection"""
         output_dir = filedialog.askdirectory()
@@ -843,7 +1180,12 @@ class EnhancedTTSApp:
         elif selected_style == "Default (no style instruction)":
             self.style_instructions["narrator"] = ""
         else:
-            self.style_instructions["narrator"] = selected_style
+            # Check if it's a custom style
+            if selected_style not in STYLE_PRESETS["narrator"]:
+                instruction = self.style_manager.get_style_instruction("narrator", selected_style)
+                self.style_instructions["narrator"] = instruction
+            else:
+                self.style_instructions["narrator"] = selected_style
             
         # Dialog style
         selected_style = self.dialog_style_var.get()
@@ -852,7 +1194,12 @@ class EnhancedTTSApp:
         elif selected_style == "Default (no style instruction)":
             self.style_instructions["dialog"] = ""
         else:
-            self.style_instructions["dialog"] = selected_style
+            # Check if it's a custom style
+            if selected_style not in STYLE_PRESETS["dialog"]:
+                instruction = self.style_manager.get_style_instruction("dialog", selected_style)
+                self.style_instructions["dialog"] = instruction
+            else:
+                self.style_instructions["dialog"] = selected_style
             
         # Computer style
         selected_style = self.computer_style_var.get()
@@ -861,7 +1208,12 @@ class EnhancedTTSApp:
         elif selected_style == "Default (no style instruction)":
             self.style_instructions["computer"] = ""
         else:
-            self.style_instructions["computer"] = selected_style
+            # Check if it's a custom style
+            if selected_style not in STYLE_PRESETS["computer"]:
+                instruction = self.style_manager.get_style_instruction("computer", selected_style)
+                self.style_instructions["computer"] = instruction
+            else:
+                self.style_instructions["computer"] = selected_style
     
     def preview_segmentation(self):
         """Preview text segmentation with OpenAI-enhanced classification"""
@@ -870,20 +1222,13 @@ class EnhancedTTSApp:
         if not filepath:
             messagebox.showwarning("Warning", "Please select a file first")
             return
-            
-        # Confirm API usage
-        confirm = messagebox.askyesno(
-            "Confirm API Usage", 
-            "This will use the OpenAI API for text classification, which may incur costs. Continue?"
-        )    
-        
-        if not confirm:
-            return
-        
         
         try:
             # Get text from file
             text = self.converter.get_text_from_file(filepath)
+            
+            # Update single voice settings
+            self.single_voice = self.single_voice_var.get()
             
             # Update voice settings
             self.voice_roles["narrator"] = self.narrator_var.get()
@@ -893,12 +1238,13 @@ class EnhancedTTSApp:
             # Update style instructions
             self.update_style_instructions()
             
-            # Show a loading message
-            self.log_message("Analyzing text with OpenAI... this may take a moment")
-            self.root.update_idletasks()
-            
             # Process text to get segments
-            segments = self.converter.process_text(text, self.voice_roles)
+            segments = self.converter.process_text(
+                text, 
+                self.voice_roles,
+                self.single_voice_mode,
+                self.single_voice
+            )
             
             # Display segmented text with voice and style assignments
             self.preview_text.delete(1.0, tk.END)
@@ -933,7 +1279,7 @@ class EnhancedTTSApp:
         except Exception as e:
             self.log_message(f"Error previewing segmentation: {str(e)}")
             messagebox.showerror("Error", f"Error previewing segmentation: {str(e)}")
-        
+    
     def convert_file(self):
         """Convert the file to speech"""
         filepath = self.file_path_var.get()
@@ -946,6 +1292,9 @@ class EnhancedTTSApp:
         if not output_dir:
             messagebox.showwarning("Warning", "Please select an output directory")
             return
+        
+        # Update single voice settings
+        self.single_voice = self.single_voice_var.get()
         
         # Update voice settings
         self.voice_roles["narrator"] = self.narrator_var.get()
@@ -963,7 +1312,7 @@ class EnhancedTTSApp:
             args=(filepath, output_dir, selected_model), 
             daemon=True
         ).start()
-    
+
     def _run_conversion(self, filepath, output_dir, model):
         """Run the conversion process"""
         try:
@@ -971,9 +1320,13 @@ class EnhancedTTSApp:
             self.log_message("Starting conversion process...")
             
             # Log the configuration
-            self.log_message(f"Using narrator voice: {self.voice_roles['narrator']}")
-            self.log_message(f"Using dialog voice: {self.voice_roles['dialog']}")
-            self.log_message(f"Using computer voice: {self.voice_roles['computer']}")
+            if self.single_voice_mode:
+                self.log_message(f"Using single voice mode with voice: {self.single_voice}")
+            else:
+                self.log_message(f"Using narrator voice: {self.voice_roles['narrator']}")
+                self.log_message(f"Using dialog voice: {self.voice_roles['dialog']}")
+                self.log_message(f"Using computer voice: {self.voice_roles['computer']}")
+                
             self.log_message(f"Using model: {model}")
             
             # Log style instructions
@@ -987,7 +1340,9 @@ class EnhancedTTSApp:
                 output_dir, 
                 self.voice_roles,
                 self.style_instructions,
-                model
+                model,
+                self.single_voice_mode,
+                self.single_voice
             )
             
             self.progress_bar.stop()
@@ -999,6 +1354,7 @@ class EnhancedTTSApp:
             error_msg = f"Error during conversion: {str(e)}"
             self.log_message(error_msg)
             messagebox.showerror("Error", f"❌ {error_msg}")
+        
 
 # Main application entry point
 def main():
